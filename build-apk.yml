@@ -1,0 +1,62 @@
+name: Build JalanGo Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Generate Android platform files
+        run: flutter create . --platforms=android --org my.jalango --project-name jalango
+
+      - name: Add location permissions
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('android/app/src/main/AndroidManifest.xml')
+          s = p.read_text()
+          marker = '    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />'
+          additions = '''    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+              <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />'''
+          if 'android.permission.ACCESS_COARSE_LOCATION' not in s:
+              s = s.replace('<application', marker + '\n    <application', 1)
+          if 'android.permission.ACCESS_FINE_LOCATION' not in s:
+              s = s.replace('<application', '    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />\n    <application', 1)
+          p.write_text(s)
+          PY
+
+      - name: Fetch dependencies
+        run: flutter pub get
+
+      - name: Build release APK
+        run: flutter build apk --release
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: JalanGo-Android-APK
+          path: build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
+          retention-days: 14
