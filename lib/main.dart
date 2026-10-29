@@ -512,21 +512,22 @@ class _MapHomeState extends State<MapHome> {
                     );
                   }).toList(),
                 ),
-                RichAttributionWidget(
-                  attributions: [
-                    TextSourceAttribution(
-                      'OpenStreetMap contributors',
-                      onTap: () => launchUrl(
-                        Uri.parse(
-                          'https://www.openstreetmap.org/copyright',
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-                            ),
-          ),
-          Container(
+            RichAttributionWidget(
+attributions: [
+TextSourceAttribution(
+'OpenStreetMap contributors',
+onTap: () => launchUrl(
+Uri.parse(
+'https://www.openstreetmap.org/copyright',
+),
+),
+),
+],
+),
+],
+),
+),
+Container(
             width: double.infinity,
             padding: const EdgeInsets.fromLTRB(16, 12, 16, 14),
             decoration: const BoxDecoration(
