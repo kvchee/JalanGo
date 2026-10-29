@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:geolocator/geolocator.dart';
@@ -20,10 +21,10 @@ class JalanGoApp extends StatelessWidget {
       title: 'JalanGo',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
+        useMaterial3: true,
         colorScheme: ColorScheme.fromSeed(
           seedColor: const Color(0xFF087F5B),
         ),
-        useMaterial3: true,
       ),
       home: const MapHome(),
     );
@@ -72,8 +73,10 @@ class _MapHomeState extends State<MapHome> {
 
   LatLng _currentLocation = const LatLng(3.1390, 101.6869);
   LatLng? _destination;
+
   List<LatLng> _routePoints = [];
   List<_DrivingStep> _steps = [];
+  final List<_RoadReport> _reports = [];
 
   bool _isDarkMap = false;
   bool _isLoadingLocation = false;
@@ -81,10 +84,12 @@ class _MapHomeState extends State<MapHome> {
 
   String _status = 'Ready to explore';
   String _destinationName = '';
+
   double? _routeDistanceMetres;
   double? _routeDurationSeconds;
 
-  final List<_RoadReport> _reports = [];
+  static const Color _brandGreen = Color(0xFF087F5B);
+  static const Color _routeBlue = Color(0xFF087FDE);
 
   @override
   void dispose() {
@@ -100,15 +105,13 @@ class _MapHomeState extends State<MapHome> {
     });
 
     try {
-      bool serviceEnabled =
+      final bool serviceEnabled =
           await Geolocator.isLocationServiceEnabled();
 
       if (!serviceEnabled) {
-        if (!mounted) return;
-        setState(() {
-          _status = 'Please turn on your phone location service.';
-          _isLoadingLocation = false;
-        });
+        _setLocationStatus(
+          'Please turn on your phone location service.',
+        );
         return;
       }
 
@@ -120,21 +123,14 @@ class _MapHomeState extends State<MapHome> {
       }
 
       if (permission == LocationPermission.denied) {
-        if (!mounted) return;
-        setState(() {
-          _status = 'Location permission was denied.';
-          _isLoadingLocation = false;
-        });
+        _setLocationStatus('Location permission was denied.');
         return;
       }
 
       if (permission == LocationPermission.deniedForever) {
-        if (!mounted) return;
-        setState(() {
-          _status =
-              'Enable location permission in your phone settings.';
-          _isLoadingLocation = false;
-        });
+        _setLocationStatus(
+          'Enable location permission in your phone settings.',
+        );
         return;
       }
 
@@ -160,13 +156,19 @@ class _MapHomeState extends State<MapHome> {
 
       _mapController.move(point, 16);
     } catch (e) {
-      if (!mounted) return;
-
-      setState(() {
-        _isLoadingLocation = false;
-        _status = 'Could not get location. Please try again.';
-      });
+      _setLocationStatus(
+        'Could not get your location. Please try again.',
+      );
     }
+  }
+
+  void _setLocationStatus(String message) {
+    if (!mounted) return;
+
+    setState(() {
+      _isLoadingLocation = false;
+      _status = message;
+    });
   }
 
   Future<void> _searchDestination() async {
@@ -220,8 +222,7 @@ class _MapHomeState extends State<MapHome> {
 
         setState(() {
           _isSearching = false;
-          _status =
-              'No result found. Try a town, landmark, or full address.';
+          _status = 'No destination found. Try another search.';
         });
         return;
       }
@@ -243,7 +244,7 @@ class _MapHomeState extends State<MapHome> {
         _destination = destination;
         _destinationName = name;
         _isSearching = false;
-        _status = 'Destination found. Getting driving route...';
+        _status = 'Destination found. Calculating route...';
       });
 
       _mapController.move(destination, 14);
@@ -262,7 +263,7 @@ class _MapHomeState extends State<MapHome> {
       setState(() {
         _isSearching = false;
         _status =
-            'Could not search right now. Check your internet connection.';
+            'Search failed. Check your internet connection.';
       });
     }
   }
@@ -275,8 +276,7 @@ class _MapHomeState extends State<MapHome> {
 
       final Uri routeUri = Uri.parse(
         'https://router.project-osrm.org/route/v1/driving/'
-        '$coordinates'
-        '?overview=full&geometries=geojson&steps=true',
+        '$coordinates?overview=full&geometries=geojson&steps=true',
       );
 
       final http.Response response = await http.get(
@@ -295,13 +295,13 @@ class _MapHomeState extends State<MapHome> {
           jsonDecode(response.body) as Map<String, dynamic>;
 
       if (data['code'] != 'Ok') {
-        throw Exception('No driving route was found.');
+        throw Exception('No route found.');
       }
 
       final List<dynamic> routes = data['routes'] as List<dynamic>;
 
       if (routes.isEmpty) {
-        throw Exception('No driving route was found.');
+        throw Exception('No route found.');
       }
 
       final Map<String, dynamic> route =
@@ -313,16 +313,18 @@ class _MapHomeState extends State<MapHome> {
       final List<dynamic> coordinatesList =
           geometry['coordinates'] as List<dynamic>;
 
-      final List<LatLng> points = coordinatesList.map((dynamic item) {
-        final List<dynamic> coordinate = item as List<dynamic>;
-        return LatLng(
-          (coordinate[1] as num).toDouble(),
-          (coordinate[0] as num).toDouble(),
-        );
-      }).toList();
+      final List<LatLng> points = coordinatesList.map(
+        (dynamic item) {
+          final List<dynamic> coordinate = item as List<dynamic>;
+
+          return LatLng(
+            (coordinate[1] as num).toDouble(),
+            (coordinate[0] as num).toDouble(),
+          );
+        },
+      ).toList();
 
       final List<_DrivingStep> newSteps = [];
-
       final List<dynamic> legs = route['legs'] as List<dynamic>;
 
       for (final dynamic legItem in legs) {
@@ -339,19 +341,14 @@ class _MapHomeState extends State<MapHome> {
           final Map<String, dynamic> maneuver =
               step['maneuver'] as Map<String, dynamic>? ?? {};
 
-          final Map<String, dynamic> name =
-              step['name'] is Map<String, dynamic>
-                  ? step['name'] as Map<String, dynamic>
-                  : {};
-
-          final String roadName =
-              step['name']?.toString() ?? '';
-
           final String type =
               maneuver['type']?.toString() ?? 'continue';
 
           final String modifier =
               maneuver['modifier']?.toString() ?? '';
+
+          final String roadName =
+              step['name']?.toString() ?? '';
 
           final double distance =
               (step['distance'] as num?)?.toDouble() ?? 0;
@@ -393,8 +390,10 @@ class _MapHomeState extends State<MapHome> {
       setState(() {
         _routePoints = [];
         _steps = [];
+        _routeDistanceMetres = null;
+        _routeDurationSeconds = null;
         _status =
-            'Could not get a driving route. Try searching again later.';
+            'Could not calculate the route. Please try again.';
       });
     }
   }
@@ -424,8 +423,6 @@ class _MapHomeState extends State<MapHome> {
         return 'At the end of the road, turn ${modifier.isEmpty ? 'ahead' : modifier}';
       case 'continue':
         return 'Continue straight';
-      case 'notification':
-        return 'Continue on the route';
       default:
         return 'Continue along the route';
     }
@@ -434,12 +431,21 @@ class _MapHomeState extends State<MapHome> {
   IconData _instructionIcon(String type, String modifier) {
     if (type == 'arrive') return Icons.flag_rounded;
     if (type == 'depart') return Icons.play_arrow_rounded;
+
     if (type == 'roundabout' || type == 'rotary') {
       return Icons.roundabout_right_rounded;
     }
-    if (modifier.contains('left')) return Icons.turn_left_rounded;
-    if (modifier.contains('right')) return Icons.turn_right_rounded;
+
+    if (modifier.contains('left')) {
+      return Icons.turn_left_rounded;
+    }
+
+    if (modifier.contains('right')) {
+      return Icons.turn_right_rounded;
+    }
+
     if (type == 'merge') return Icons.merge_rounded;
+
     return Icons.straight_rounded;
   }
 
@@ -447,6 +453,7 @@ class _MapHomeState extends State<MapHome> {
     if (metres >= 1000) {
       return '${(metres / 1000).toStringAsFixed(1)} km';
     }
+
     return '${metres.round()} m';
   }
 
@@ -455,37 +462,37 @@ class _MapHomeState extends State<MapHome> {
 
     final int minutes = (seconds / 60).round();
 
-    if (minutes < 60) {
-      return '$minutes min';
-    }
+    if (minutes < 60) return '$minutes min';
 
     final int hours = minutes ~/ 60;
     final int remainingMinutes = minutes % 60;
 
-    if (remainingMinutes == 0) {
-      return '$hours hr';
-    }
+    if (remainingMinutes == 0) return '$hours hr';
 
     return '$hours hr $remainingMinutes min';
   }
 
-  void _addRoadReport(String label, IconData icon, Color color) {
-    final _RoadReport report = _RoadReport(
-      label: label,
-      point: _currentLocation,
-      icon: icon,
-      color: color,
-    );
-
+  void _addRoadReport(
+    String label,
+    IconData icon,
+    Color color,
+  ) {
     setState(() {
-      _reports.add(report);
+      _reports.add(
+        _RoadReport(
+          label: label,
+          point: _currentLocation,
+          icon: icon,
+          color: color,
+        ),
+      );
+
       _status = '$label report added to this session.';
     });
 
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text('$label report added.'),
-        duration: const Duration(seconds: 2),
       ),
     );
   }
@@ -494,7 +501,9 @@ class _MapHomeState extends State<MapHome> {
     if (_steps.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Search for a destination to get directions.'),
+          content: Text(
+            'Search for a destination to get directions.',
+          ),
         ),
       );
       return;
@@ -504,10 +513,10 @@ class _MapHomeState extends State<MapHome> {
       context: context,
       isScrollControlled: true,
       showDragHandle: true,
-      builder: (BuildContext context) {
+      builder: (BuildContext sheetContext) {
         return SafeArea(
           child: SizedBox(
-            height: MediaQuery.of(context).size.height * 0.72,
+            height: MediaQuery.of(sheetContext).size.height * 0.72,
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -515,7 +524,9 @@ class _MapHomeState extends State<MapHome> {
                   padding: const EdgeInsets.fromLTRB(20, 8, 20, 12),
                   child: Text(
                     'Driving directions',
-                    style: Theme.of(context).textTheme.titleLarge,
+                    style: Theme.of(sheetContext)
+                        .textTheme
+                        .titleLarge,
                   ),
                 ),
                 Padding(
@@ -524,7 +535,9 @@ class _MapHomeState extends State<MapHome> {
                     _destinationName,
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
-                    style: Theme.of(context).textTheme.bodySmall,
+                    style: Theme.of(sheetContext)
+                        .textTheme
+                        .bodySmall,
                   ),
                 ),
                 const SizedBox(height: 8),
@@ -565,7 +578,7 @@ class _MapHomeState extends State<MapHome> {
     showModalBottomSheet<void>(
       context: context,
       showDragHandle: true,
-      builder: (BuildContext context) {
+      builder: (BuildContext sheetContext) {
         return SafeArea(
           child: Padding(
             padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
@@ -575,7 +588,7 @@ class _MapHomeState extends State<MapHome> {
               children: [
                 Text(
                   'Report a road issue',
-                  style: Theme.of(context).textTheme.titleLarge,
+                  style: Theme.of(sheetContext).textTheme.titleLarge,
                 ),
                 const SizedBox(height: 8),
                 const Text(
@@ -587,21 +600,25 @@ class _MapHomeState extends State<MapHome> {
                   runSpacing: 10,
                   children: [
                     _reportButton(
+                      sheetContext,
                       'Traffic',
                       Icons.traffic_rounded,
                       Colors.orange,
                     ),
                     _reportButton(
+                      sheetContext,
                       'Road hazard',
                       Icons.warning_rounded,
                       Colors.red,
                     ),
                     _reportButton(
+                      sheetContext,
                       'Road closure',
                       Icons.block_rounded,
                       Colors.deepPurple,
                     ),
                     _reportButton(
+                      sheetContext,
                       'Flooding',
                       Icons.water_rounded,
                       Colors.blue,
@@ -616,10 +633,15 @@ class _MapHomeState extends State<MapHome> {
     );
   }
 
-  Widget _reportButton(String label, IconData icon, Color color) {
+  Widget _reportButton(
+    BuildContext sheetContext,
+    String label,
+    IconData icon,
+    Color color,
+  ) {
     return FilledButton.tonalIcon(
       onPressed: () {
-        Navigator.pop(context);
+        Navigator.pop(sheetContext);
         _addRoadReport(label, icon, color);
       },
       icon: Icon(icon, color: color),
@@ -635,16 +657,31 @@ class _MapHomeState extends State<MapHome> {
       '#map=15/${_currentLocation.latitude}/${_currentLocation.longitude}',
     );
 
-    await launchUrl(uri, mode: LaunchMode.externalApplication);
+    await launchUrl(
+      uri,
+      mode: LaunchMode.externalApplication,
+    );
+  }
+
+  void _clearSearch() {
+    _searchController.clear();
+
+    setState(() {
+      _destination = null;
+      _destinationName = '';
+      _routePoints = [];
+      _steps = [];
+      _routeDistanceMetres = null;
+      _routeDurationSeconds = null;
+      _status = 'Ready to explore';
+    });
   }
 
   @override
   Widget build(BuildContext context) {
-    final Color brandGreen = const Color(0xFF087F5B);
-
     return Scaffold(
       appBar: AppBar(
-        backgroundColor: brandGreen,
+        backgroundColor: _brandGreen,
         foregroundColor: Colors.white,
         titleSpacing: 16,
         title: Row(
@@ -674,7 +711,7 @@ class _MapHomeState extends State<MapHome> {
       ),
       body: Column(
         children: [
-          _buildSearchPanel(brandGreen),
+          _buildSearchPanel(),
           Expanded(
             child: Stack(
               children: [
@@ -693,13 +730,13 @@ class _MapHomeState extends State<MapHome> {
                           : 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
                       userAgentPackageName: 'com.jalango.app',
                     ),
-                                        if (_routePoints.isNotEmpty)
+                    if (_routePoints.isNotEmpty)
                       PolylineLayer(
                         polylines: [
                           Polyline(
                             points: _routePoints,
                             strokeWidth: 7,
-                            color: const Color(0xFF087FDE)
+                                                       color: const Color(0xFF087FDE)
                                 .withValues(alpha: 0.25),
                           ),
                           Polyline(
@@ -715,10 +752,16 @@ class _MapHomeState extends State<MapHome> {
                           point: _currentLocation,
                           width: 46,
                           height: 46,
-                          child: const Icon(
-                            Icons.my_location_rounded,
-                            color: Color(0xFF087FDE),
-                            size: 32,
+                          child: Container(
+                            decoration: BoxDecoration(
+                              color: Colors.white,
+                              shape: BoxShape.circle,
+                            ),
+                            child: const Icon(
+                              Icons.my_location_rounded,
+                              color: Color(0xFF087FDE),
+                              size: 27,
+                            ),
                           ),
                         ),
                         if (_destination != null)
@@ -758,6 +801,8 @@ class _MapHomeState extends State<MapHome> {
                         const TextSourceAttribution('CARTO'),
                       ],
                     ),
+                  ],
+                ),
                 Positioned(
                   top: 12,
                   right: 12,
@@ -809,7 +854,7 @@ class _MapHomeState extends State<MapHome> {
     );
   }
 
-  Widget _buildSearchPanel(Color brandGreen) {
+  Widget _buildSearchPanel() {
     return Container(
       padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
       color: Theme.of(context).colorScheme.surface,
@@ -824,24 +869,12 @@ class _MapHomeState extends State<MapHome> {
               prefixIcon: const Icon(Icons.search_rounded),
               suffixIcon: IconButton(
                 tooltip: 'Clear search',
-                onPressed: () {
-                  _searchController.clear();
-                  setState(() {
-                    _destination = null;
-                    _destinationName = '';
-                    _routePoints = [];
-                    _steps = [];
-                    _routeDistanceMetres = null;
-                    _routeDurationSeconds = null;
-                    _status = 'Ready to explore';
-                  });
-                },
+                onPressed: _clearSearch,
                 icon: const Icon(Icons.close_rounded),
               ),
               filled: true,
               fillColor: Theme.of(context)
-                  .colorScheme
-                  .surfaceContainerHighest
+                  .colorScheme.surfaceContainerHighest
                   .withValues(alpha: 0.45),
               border: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(16),
@@ -853,8 +886,8 @@ class _MapHomeState extends State<MapHome> {
               ),
               focusedBorder: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(16),
-                borderSide: BorderSide(
-                  color: brandGreen,
+                borderSide: const BorderSide(
+                  color: Color(0xFF087F5B),
                   width: 1.5,
                 ),
               ),
@@ -870,7 +903,7 @@ class _MapHomeState extends State<MapHome> {
                 _isSearching ? 'Searching...' : 'Find driving route',
               ),
               style: FilledButton.styleFrom(
-                backgroundColor: brandGreen,
+                backgroundColor: const Color(0xFF087F5B),
                 padding: const EdgeInsets.symmetric(vertical: 13),
               ),
             ),
@@ -908,7 +941,10 @@ class _MapHomeState extends State<MapHome> {
             const SizedBox(height: 10),
             Row(
               children: [
-                const Icon(Icons.route_rounded, color: Color(0xFF087F5B)),
+                const Icon(
+                  Icons.route_rounded,
+                  color: Color(0xFF087F5B),
+                ),
                 const SizedBox(width: 8),
                 Text(
                   _formatDistance(_routeDistanceMetres!),
@@ -949,7 +985,7 @@ class _MapHomeState extends State<MapHome> {
           ),
           const SizedBox(height: 4),
           const Text(
-            'Route estimates may vary. Drive safely and follow road signs.',
+            'Route estimates may vary. Follow road signs and drive safely.',
             style: TextStyle(fontSize: 11, color: Colors.grey),
           ),
         ],
@@ -973,4 +1009,4 @@ class _MapHomeState extends State<MapHome> {
       ),
     );
   }
-                }
+}
