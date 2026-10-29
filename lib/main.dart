@@ -46,10 +46,12 @@ class MapHome extends StatefulWidget {
 
 class _MapHomeState extends State<MapHome> {
   final MapController _mapController = MapController();
+
   final TextEditingController _destinationController =
       TextEditingController();
 
   LatLng _center = const LatLng(3.1390, 101.6869);
+
   bool _darkMap = false;
   bool _busy = false;
 
@@ -57,7 +59,12 @@ class _MapHomeState extends State<MapHome> {
   LatLng? _destinationPoint;
 
   List<LatLng> _routePoints = [];
+  List<_DrivingStep> _directions = [];
 
+  double _routeDistanceKm = 0;
+  int _routeDurationMinutes = 0;
+
+  String _destinationName = '';
   String _status = 'Ready to explore Malaysia';
 
   final List<_RoadReport> _reports = [
@@ -92,12 +99,28 @@ class _MapHomeState extends State<MapHome> {
         if (!mounted) return;
 
         setState(() {
-          _status = 'Location permission is needed to show your position.';
+          _status = 'Allow location permission in Android settings.';
         });
         return;
       }
 
-      final position = await Geolocator.getCurrentPosition();
+      final serviceEnabled =
+          await Geolocator.isLocationServiceEnabled();
+
+      if (!serviceEnabled) {
+        if (!mounted) return;
+
+        setState(() {
+          _status = 'Turn on GPS on your phone and try again.';
+        });
+        return;
+      }
+
+      final position = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.high,
+        ),
+      );
 
       final point = LatLng(
         position.latitude,
@@ -138,7 +161,8 @@ class _MapHomeState extends State<MapHome> {
     });
 
     try {
-      final uri = Uri.https(
+      // Find the destination in Malaysia.
+      final searchUri = Uri.https(
         'nominatim.openstreetmap.org',
         '/search',
         {
@@ -149,41 +173,50 @@ class _MapHomeState extends State<MapHome> {
         },
       );
 
-      final response = await http
-          .get(
-            uri,
-            headers: {
-              'User-Agent': 'JalanGo/0.1 (Android navigation prototype)',
-              'Accept-Language': 'en,ms',
-            },
-          )
-          .timeout(const Duration(seconds: 15));
+      final searchResponse = await http.get(
+        searchUri,
+        headers: {
+          'User-Agent': 'JalanGo/0.2 (Android navigation app)',
+          'Accept-Language': 'en,ms',
+        },
+      ).timeout(const Duration(seconds: 20));
 
-      if (response.statusCode != 200) {
-        throw Exception('Search service returned ${response.statusCode}');
+      if (searchResponse.statusCode != 200) {
+        throw Exception('Destination search failed.');
       }
 
-      final results = jsonDecode(response.body) as List<dynamic>;
+      final searchResults =
+          jsonDecode(searchResponse.body) as List<dynamic>;
 
-      if (results.isEmpty) {
+      if (searchResults.isEmpty) {
         if (!mounted) return;
 
         setState(() {
           _busy = false;
-          _status = 'No result found. Try adding a town or state.';
+          _status = 'No place found. Try adding a town or state.';
         });
         return;
       }
 
-      final item = results.first as Map<String, dynamic>;
+      final place = searchResults.first as Map<String, dynamic>;
 
       final target = LatLng(
-        double.parse(item['lat'] as String),
-        double.parse(item['lon'] as String),
+        double.parse(place['lat'] as String),
+        double.parse(place['lon'] as String),
       );
 
+      final placeName =
+          (place['display_name'] as String?) ?? destination;
+
+      // Use GPS as the starting point when available.
+      // Otherwise, use the current map centre.
       final start = _currentLocation ?? _center;
 
+      setState(() {
+        _status = 'Calculating driving route...';
+      });
+
+      // Request the route geometry and individual driving steps.
       final routeUri = Uri.https(
         'router.project-osrm.org',
         '/route/v1/driving/'
@@ -193,26 +226,27 @@ class _MapHomeState extends State<MapHome> {
           'overview': 'full',
           'geometries': 'geojson',
           'steps': 'true',
+          'alternatives': 'false',
         },
       );
 
-      final routeResponse = await http
-          .get(
-            routeUri,
-            headers: {
-              'User-Agent': 'JalanGo/0.1 (Android navigation prototype)',
-            },
-          )
-          .timeout(const Duration(seconds: 20));
+      final routeResponse = await http.get(
+        routeUri,
+        headers: {
+          'User-Agent': 'JalanGo/0.2 (Android navigation app)',
+        },
+      ).timeout(const Duration(seconds: 30));
 
       if (routeResponse.statusCode != 200) {
-        throw Exception(
-          'Routing service returned ${routeResponse.statusCode}',
-        );
+        throw Exception('Driving route request failed.');
       }
 
       final routeData =
           jsonDecode(routeResponse.body) as Map<String, dynamic>;
+
+      if (routeData['code'] != 'Ok') {
+        throw Exception('No driving route was found.');
+      }
 
       final routes = routeData['routes'] as List<dynamic>? ?? [];
 
@@ -222,12 +256,15 @@ class _MapHomeState extends State<MapHome> {
 
       final route = routes.first as Map<String, dynamic>;
 
-      final coordinates =
-          (route['geometry'] as Map<String, dynamic>)['coordinates']
-              as List<dynamic>;
+      // Convert the route geometry into map points.
+      final geometry =
+          route['geometry'] as Map<String, dynamic>;
 
-      final points = coordinates.map((coord) {
-        final pair = coord as List<dynamic>;
+      final coordinates =
+          geometry['coordinates'] as List<dynamic>;
+
+      final points = coordinates.map((coordinate) {
+        final pair = coordinate as List<dynamic>;
 
         return LatLng(
           (pair[1] as num).toDouble(),
@@ -235,40 +272,299 @@ class _MapHomeState extends State<MapHome> {
         );
       }).toList();
 
-      final distanceKm =
-          ((route['distance'] as num).toDouble() / 1000)
-              .toStringAsFixed(1);
+      // Read the driving instructions from the route legs.
+      final legs = route['legs'] as List<dynamic>? ?? [];
+      final List<_DrivingStep> steps = [];
 
-      final minutes =
+      for (final legValue in legs) {
+        final leg = legValue as Map<String, dynamic>;
+        final legSteps =
+            leg['steps'] as List<dynamic>? ?? [];
+
+        for (final stepValue in legSteps) {
+          final step = stepValue as Map<String, dynamic>;
+
+          final maneuver =
+              step['maneuver'] as Map<String, dynamic>? ?? {};
+
+          final type = maneuver['type'] as String? ?? 'continue';
+          final modifier =
+              maneuver['modifier'] as String? ?? '';
+          final roadName = step['name'] as String? ?? '';
+
+          final distance =
+              (step['distance'] as num?)?.toDouble() ?? 0;
+
+          final instruction = _makeInstruction(
+            type: type,
+            modifier: modifier,
+            roadName: roadName,
+            exitNumber: maneuver['exit']?.toString(),
+          );
+
+          steps.add(
+            _DrivingStep(
+              instruction: instruction,
+              roadName: roadName,
+              distanceMetres: distance,
+              icon: _instructionIcon(type, modifier),
+            ),
+          );
+        }
+      }
+
+      final distanceKm =
+          ((route['distance'] as num).toDouble() / 1000);
+
+      final durationMinutes =
           ((route['duration'] as num).toDouble() / 60).round();
 
       if (!mounted) return;
 
       setState(() {
         _busy = false;
-        _destinationPoint = target;
-        _routePoints = points;
 
-        _status = 'Route: $distanceKm km · about $minutes min. '
-            '${_currentLocation == null ? 'Start is the current map centre; tap My location for a route from GPS.' : 'Route starts from your GPS location.'}';
+        _destinationPoint = target;
+        _destinationName = placeName;
+
+        _routePoints = points;
+        _directions = steps;
+
+        _routeDistanceKm = distanceKm;
+        _routeDurationMinutes = durationMinutes;
+
+        _status = 'Route ready: ${distanceKm.toStringAsFixed(1)} km, '
+            'about $durationMinutes min.';
       });
 
-      _mapController.move(target, 13);
+      // Fit the map to show the entire route.
+      if (points.isNotEmpty) {
+        final bounds = LatLngBounds.fromPoints(points);
+        _mapController.fitCamera(
+          CameraFit.bounds(
+            bounds: bounds,
+            padding: const EdgeInsets.all(45),
+          ),
+        );
+      }
     } catch (e) {
       if (!mounted) return;
 
       setState(() {
         _busy = false;
-        _status = 'Could not find a route. Check internet and try again.';
+        _status =
+            'Could not calculate the route. Check internet and try again.';
       });
     }
+  }
+
+  String _makeInstruction({
+    required String type,
+    required String modifier,
+    required String roadName,
+    String? exitNumber,
+  }) {
+    final road = roadName.trim().isEmpty ? '' : ' onto $roadName';
+
+    switch (type) {
+      case 'depart':
+        return roadName.trim().isEmpty
+            ? 'Start driving'
+            : 'Start driving on $roadName';
+
+      case 'arrive':
+        return 'You have arrived at your destination';
+
+      case 'turn':
+        return 'Turn ${modifier.isEmpty ? 'ahead' : modifier}$road';
+
+      case 'new name':
+        return roadName.trim().isEmpty
+            ? 'Continue on the road'
+            : 'Continue onto $roadName';
+
+      case 'continue':
+        return roadName.trim().isEmpty
+            ? 'Continue straight'
+            : 'Continue on $roadName';
+
+      case 'merge':
+        return 'Merge ${modifier.isEmpty ? 'ahead' : modifier}$road';
+
+      case 'on ramp':
+        return 'Take the ramp$road';
+
+      case 'off ramp':
+        return 'Take the exit ramp$road';
+
+      case 'fork':
+        return 'Keep ${modifier.isEmpty ? 'straight' : modifier}$road';
+
+      case 'roundabout':
+      case 'rotary':
+        if (exitNumber != null && exitNumber.isNotEmpty) {
+          return 'At the roundabout, take exit $exitNumber$road';
+        }
+        return 'Enter the roundabout$road';
+
+      case 'end of road':
+        return 'At the end of the road, turn '
+            '${modifier.isEmpty ? 'ahead' : modifier}$road';
+
+      case 'use lane':
+        return 'Follow the indicated lane$road';
+
+      case 'notification':
+        return roadName.trim().isEmpty
+            ? 'Continue along the route'
+            : 'Continue on $roadName';
+
+      default:
+        return roadName.trim().isEmpty
+            ? 'Continue along the route'
+            : 'Continue on $roadName';
+    }
+  }
+
+  IconData _instructionIcon(String type, String modifier) {
+    if (type == 'depart') return Icons.play_arrow_rounded;
+    if (type == 'arrive') return Icons.flag_rounded;
+
+    if (type == 'roundabout' || type == 'rotary') {
+      return Icons.roundabout_right_rounded;
+    }
+
+    if (type == 'merge' || type == 'fork') {
+      return Icons.call_split_rounded;
+    }
+
+    if (type == 'on ramp' || type == 'off ramp') {
+      return Icons.turn_sharp_right_rounded;
+    }
+
+    if (modifier.contains('left')) {
+      return Icons.turn_left_rounded;
+    }
+
+    if (modifier.contains('right')) {
+      return Icons.turn_right_rounded;
+    }
+
+    if (modifier == 'uturn') {
+      return Icons.u_turn_left_rounded;
+    }
+
+    return Icons.straight_rounded;
+  }
+
+  String _formatDistance(double metres) {
+    if (metres >= 1000) {
+      return '${(metres / 1000).toStringAsFixed(1)} km';
+    }
+
+    return '${metres.round()} m';
+  }
+
+  void _showDirections() {
+    if (_directions.isEmpty) {
+      setState(() {
+        _status = 'Search for a destination to get driving directions.';
+      });
+      return;
+    }
+
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (sheetContext) {
+        return SafeArea(
+          child: SizedBox(
+            height: MediaQuery.of(sheetContext).size.height * 0.78,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 4, 20, 12),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Driving directions',
+                        style: TextStyle(
+                          fontSize: 23,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        _destinationName,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(color: Colors.black54),
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        '${_routeDistanceKm.toStringAsFixed(1)} km'
+                        '  ·  about $_routeDurationMinutes min',
+                        style: const TextStyle(
+                          color: Color(0xFF087F5B),
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const Divider(height: 1),
+                Expanded(
+                  child: ListView.separated(
+                    itemCount: _directions.length,
+                    separatorBuilder: (_, __) =>
+                        const Divider(height: 1, indent: 72),
+                    itemBuilder: (context, index) {
+                      final step = _directions[index];
+
+                      return ListTile(
+                        leading: CircleAvatar(
+                          backgroundColor:
+                              const Color(0xFFE5F4ED),
+                          foregroundColor:
+                              const Color(0xFF087F5B),
+                          child: Icon(step.icon),
+                        ),
+                        title: Text(
+                          step.instruction,
+                          style: const TextStyle(
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        subtitle: step.roadName.isEmpty
+                            ? null
+                            : Text(step.roadName),
+                        trailing: Text(
+                          _formatDistance(step.distanceMetres),
+                          style: const TextStyle(
+                            fontSize: 12,
+                            color: Colors.black54,
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
   }
 
   void _addReport() {
     showModalBottomSheet<void>(
       context: context,
       showDragHandle: true,
-      builder: (context) => SafeArea(
+      builder: (sheetContext) => SafeArea(
         child: Padding(
           padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
           child: Column(
@@ -285,32 +581,32 @@ class _MapHomeState extends State<MapHome> {
                 runSpacing: 10,
                 children: [
                   _reportButton(
-                    context,
+                    sheetContext,
                     'Traffic',
                     Icons.traffic_rounded,
                   ),
                   _reportButton(
-                    context,
+                    sheetContext,
                     'Accident',
                     Icons.car_crash_rounded,
                   ),
                   _reportButton(
-                    context,
+                    sheetContext,
                     'Hazard',
                     Icons.warning_amber_rounded,
                   ),
                   _reportButton(
-                    context,
+                    sheetContext,
                     'Flood',
                     Icons.flood_rounded,
                   ),
                   _reportButton(
-                    context,
+                    sheetContext,
                     'Roadworks',
                     Icons.construction_rounded,
                   ),
                   _reportButton(
-                    context,
+                    sheetContext,
                     'Pothole',
                     Icons.tire_repair_rounded,
                   ),
@@ -350,8 +646,9 @@ class _MapHomeState extends State<MapHome> {
   @override
   Widget build(BuildContext context) {
     final tiles = _darkMap
-? 'https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png'
-: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
+        ? 'https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png'
+        : 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
+
     return Scaffold(
       appBar: AppBar(
         title: Row(
@@ -404,202 +701,11 @@ class _MapHomeState extends State<MapHome> {
                     textInputAction: TextInputAction.search,
                     onSubmitted: (_) => _searchDestination(),
                     decoration: InputDecoration(
-                      hintText: 'Where to?  e.g. Johor Bahru',
+                      hintText: 'Where to? e.g. Johor Bahru',
                       prefixIcon: const Icon(Icons.search),
                       filled: true,
                       fillColor: Colors.white,
                       border: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(16),
                         borderSide: BorderSide.none,
-                      ),
-                      contentPadding: const EdgeInsets.symmetric(
-                        vertical: 4,
-                      ),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                FilledButton(
-                  onPressed: _busy ? null : _searchDestination,
-                  style: FilledButton.styleFrom(
-                    padding: const EdgeInsets.all(16),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(14),
-                    ),
-                  ),
-                  child: _busy
-                      ? const SizedBox(
-                          width: 20,
-                          height: 20,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                          ),
-                        )
-                      : const Icon(Icons.arrow_forward_rounded),
-                ),
-              ],
-            ),
-          ),
-          Expanded(
-            child: FlutterMap(
-              mapController: _mapController,
-              options: MapOptions(
-                initialCenter: _center,
-                initialZoom: 12,
-                onPositionChanged: (position, hasGesture) {
-                  if (position.center != null) {
-                    _center = position.center!;
-                  }
-                },
-              ),
-              children: [
-                TileLayer(
-                  urlTemplate: tiles,
-                  userAgentPackageName: 'my.jalango.app',
-                ),
-                if (_routePoints.isNotEmpty)
-                  PolylineLayer(
-                    polylines: [
-                      Polyline(
-                        points: _routePoints,
-                        strokeWidth: 5,
-                        color: const Color(0xFF087F5B),
-                      ),
-                    ],
-                  ),
-                if (_destinationPoint != null)
-                  MarkerLayer(
-                    markers: [
-                      Marker(
-                        point: _destinationPoint!,
-                        width: 48,
-                        height: 48,
-                        child: const Icon(
-                          Icons.location_pin,
-                          color: Color(0xFFB42318),
-                          size: 44,
-                        ),
-                      ),
-                    ],
-                  ),
-                MarkerLayer(
-                  markers: _reports.map((r) {
-                    return Marker(
-                      point: r.point,
-                      width: 44,
-                      height: 44,
-                      child: Tooltip(
-                        message: r.label,
-                        child: Container(
-                          decoration: BoxDecoration(
-                            color: Colors.white,
-                            shape: BoxShape.circle,
-                            boxShadow: [
-                              BoxShadow(
-                                color: Colors.black.withOpacity(.18),
-                                blurRadius: 8,
-                              ),
-                            ],
-                          ),
-                          child: Icon(
-                            r.icon,
-                            color: const Color(0xFFB42318),
-                            size: 25,
-                          ),
-                        ),
-                      ),
-                    );
-                  }).toList(),
-                ),
-            RichAttributionWidget(
-attributions: [
-TextSourceAttribution(
-'OpenStreetMap contributors',
-onTap: () => launchUrl(
-Uri.parse(
-'https://www.openstreetmap.org/copyright',
-),
-),
-),
-],
-),
-],
-),
-),
-Container(
-            width: double.infinity,
-            padding: const EdgeInsets.fromLTRB(16, 12, 16, 14),
-            decoration: const BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.vertical(
-                top: Radius.circular(22),
-              ),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    const Icon(
-                      Icons.info_outline,
-                      size: 18,
-                      color: Color(0xFF087F5B),
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        _status,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 12),
-                Row(
-                  children: [
-                    Expanded(
-                      child: OutlinedButton.icon(
-                        onPressed: _goToMyLocation,
-                        icon: const Icon(Icons.my_location),
-                        label: const Text('My location'),
-                      ),
-                    ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: FilledButton.icon(
-                        onPressed: _addReport,
-                        icon: const Icon(Icons.add_alert_rounded),
-                        label: const Text('Report issue'),
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 6),
-                const Text(
-                  'Prototype routing uses public demo services. '
-                  'Turn-by-turn and live reports are not active.',
-                  style: TextStyle(
-                    fontSize: 11,
-                    color: Colors.black54,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _RoadReport {
-  final String label;
-  final LatLng point;
-  final IconData icon;
-
-  const _RoadReport(this.label, this.point, this.icon);
-}
+        
