@@ -693,7 +693,7 @@ class _MapHomeState extends State<MapHome> {
                           : 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
                       userAgentPackageName: 'com.jalango.app',
                     ),
-                    if (_routePoints.isNotEmpty)
+                                        if (_routePoints.isNotEmpty)
                       PolylineLayer(
                         polylines: [
                           Polyline(
@@ -705,9 +705,59 @@ class _MapHomeState extends State<MapHome> {
                           Polyline(
                             points: _routePoints,
                             strokeWidth: 4,
-                            color: const Color(0xFF087FD),
-                  ],
-                ),
+                            color: const Color(0xFF087FDE),
+                          ),
+                        ],
+                      ),
+                    MarkerLayer(
+                      markers: [
+                        Marker(
+                          point: _currentLocation,
+                          width: 46,
+                          height: 46,
+                          child: const Icon(
+                            Icons.my_location_rounded,
+                            color: Color(0xFF087FDE),
+                            size: 32,
+                          ),
+                        ),
+                        if (_destination != null)
+                          Marker(
+                            point: _destination!,
+                            width: 48,
+                            height: 48,
+                            child: const Icon(
+                              Icons.location_pin,
+                              color: Colors.red,
+                              size: 46,
+                            ),
+                          ),
+                        ..._reports.map(
+                          (_RoadReport report) => Marker(
+                            point: report.point,
+                            width: 42,
+                            height: 42,
+                            child: Tooltip(
+                              message: report.label,
+                              child: Icon(
+                                report.icon,
+                                color: report.color,
+                                size: 34,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    RichAttributionWidget(
+                      attributions: [
+                        TextSourceAttribution(
+                          'OpenStreetMap contributors',
+                          onTap: _openOpenStreetMap,
+                        ),
+                        const TextSourceAttribution('CARTO'),
+                      ],
+                    ),
                 Positioned(
                   top: 12,
                   right: 12,
