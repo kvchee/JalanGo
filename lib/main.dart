@@ -350,9 +350,8 @@ class _MapHomeState extends State<MapHome> {
   @override
   Widget build(BuildContext context) {
     final tiles = _darkMap
-        ? 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png'
-        : 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
-
+? 'https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png'
+: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
     return Scaffold(
       appBar: AppBar(
         title: Row(
